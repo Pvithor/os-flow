@@ -1,0 +1,30 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "os-flow",
+  "main": "./worker/index.ts",
+  "compatibility_date": "2026-04-01",
+  "tsconfig": "./tsconfig.worker.json",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "none",
+    "run_worker_first": [
+      "/api/*",
+      "/.env*",
+      "/.git*",
+      "/server/*",
+      "/data/*",
+      "/src/*",
+      "/worker/*",
+      "/supabase/*"
+    ]
+  },
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "RESEND_FROM": "OS Flow <onboarding@resend.dev>",
+    "TELEGRAM_ALERT_COOLDOWN_MS": "10000",
+    "TELEGRAM_NOTIFY_ALL_REQUESTS": "false"
+  }
+}

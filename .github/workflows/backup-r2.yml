@@ -1,0 +1,74 @@
+name: Backup Noturno Supabase para R2
+
+on:
+  schedule:
+    # 03:00 AM GMT-4 (America/Cuiaba) = 07:00 UTC
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: os-flow-backup-r2
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install PostgreSQL 17 client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common ca-certificates curl
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-client-17
+
+      - name: Dump Supabase PostgreSQL database
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          if [ -z "$SUPABASE_DB_URL" ]; then
+            echo "Erro: secret SUPABASE_DB_URL nao configurado."
+            exit 1
+          fi
+          STAMP=$(date -u +%Y-%m-%d_%H%M%S)
+          FILE="os-flow-backup-${STAMP}.sql.gz"
+          echo "BACKUP_FILE=$FILE" >> "$GITHUB_ENV"
+          pg_dump "$SUPABASE_DB_URL" --no-owner --no-privileges --format=plain | gzip -9 > "$FILE"
+          if [ ! -s "$FILE" ]; then
+            echo "Erro: arquivo de backup vazio."
+            exit 1
+          fi
+          ls -lh "$FILE"
+
+      - name: Upload backup to Cloudflare R2 and prune backups older than 30 days
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          aws s3 cp "$BACKUP_FILE" "s3://${R2_BUCKET}/backups/${BACKUP_FILE}" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --content-type application/gzip
+
+          CUTOFF_DATE=$(date -u -d "30 days ago" +%Y-%m-%d)
+          aws s3 ls "s3://${R2_BUCKET}/backups/" --endpoint-url "$R2_ENDPOINT" | while read -r d _ _ key; do
+            if [[ "$d" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && [ -n "$key" ] && [ "$d" \< "$CUTOFF_DATE" ]; then
+              aws s3 rm "s3://${R2_BUCKET}/backups/${key}" --endpoint-url "$R2_ENDPOINT"
+            fi
+          done
+
+      - name: Notify Telegram on backup status
+        if: always() && secrets.TELEGRAM_BOT_TOKEN != '' && secrets.TELEGRAM_CHAT_ID != ''
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          TEXT="[OS FLOW • Backup R2] Status: ${JOB_STATUS} | Arquivo: ${BACKUP_FILE:-n/a}"
+          curl -sS -o /dev/null -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -H "Content-Type: application/json" \
+            -d "{\"chat_id\":\"${TELEGRAM_CHAT_ID}\",\"text\":\"${TEXT}\",\"disable_web_page_preview\":true}"

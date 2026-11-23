@@ -83,6 +83,7 @@ const CSP_DIRECTIVES = [
 ].join('; ');
 
 function applySecurityHeaders(headers: Headers): void {
+  headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
   headers.set('X-Content-Type-Options', 'nosniff');
   headers.set('X-Frame-Options', 'DENY');
   headers.set('Referrer-Policy', 'no-referrer');
@@ -116,7 +117,10 @@ function deriveTitle(title: string, description: string): string {
 }
 
 function csvEscape(val: unknown): string {
-  const str = String(val ?? '');
+  let str = String(val ?? '');
+  if (/^[=+\-@\t\r]/.test(str)) {
+    str = `'${str}`;
+  }
   return `"${str.replace(/"/g, '""')}"`;
 }
 
@@ -140,10 +144,14 @@ function buildOperatorSlug(name: string): string {
 }
 
 async function readJsonBody(
-  c: AppContext
+  c: AppContext,
+  maxBytes = 65_536
 ): Promise<{ ok: true; data: Record<string, any> } | { ok: false }> {
   try {
+    const contentLength = Number(c.req.header('content-length') || 0);
+    if (contentLength > maxBytes) return { ok: false };
     const raw = await c.req.text();
+    if (raw.length > maxBytes) return { ok: false };
     if (!raw.trim()) return { ok: true, data: {} };
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
@@ -239,6 +247,11 @@ export function createWorkerApp(options: WorkerAppOptions = {}) {
 
   app.use('/api/*', async (c, next) => {
     if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)) {
+      const secFetchSite = c.req.header('sec-fetch-site');
+      if (secFetchSite && secFetchSite !== 'same-origin' && secFetchSite !== 'none') {
+        notifyCritical(c, 'CSRF_BLOCKED', `Sec-Fetch-Site inválido: ${secFetchSite}`);
+        return c.json({ error: 'Origem não autorizada' }, 403);
+      }
       const host = c.req.header('host');
       if (!host) {
         notifyCritical(c, 'CSRF_BLOCKED', 'Host ausente');
